@@ -15,22 +15,24 @@ def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=10)
+        requests.post(url, json=payload, timeout=5)
     except:
         pass
+
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Sniper v13.9 Turbo", layout="wide")
 
 @st.cache_resource
 def get_crypto():
     return ccxt.binance({
-        'enableRateLimit': True,
+        'enableRateLimit': False, # Hız sınırı kaldırıldı
         'options': {'defaultType': 'future'}
     })
 
 exchange = get_crypto()
 
-st.set_page_config(page_title="Sniper v13.7 Pro", layout="wide")
-st.sidebar.title("📡 Telegram Sniper")
-
+# --- YAN MENÜ ---
+st.sidebar.title("🚀 Sniper Radar")
 if 'running' not in st.session_state: st.session_state.running = False
 def toggle(): st.session_state.running = not st.session_state.running
 
@@ -50,44 +52,50 @@ def check_and_notify(symbol):
         bars = exchange.fetch_ohlcv(symbol, timeframe=periyot, limit=100)
         df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])
         close = df['c'].iloc[-1]
+        
         ema20 = ta.trend.ema_indicator(df['c'], 20)
         ema50 = ta.trend.ema_indicator(df['c'], 50)
-        diff = (ema50.iloc[-1] - ema20.iloc[-1]) / ema20.iloc[-1] * 100
-        is_breaking_up = close > df['h'].iloc[-2]
         
-        if 0 < diff < 0.22 and is_breaking_up:
+        diff = (ema50.iloc[-1] - ema20.iloc[-1]) / ema20.iloc[-1] * 100
+        is_breaking_up = close > df['h'].iloc[-2] 
+        
+        if 0 < diff < 0.22 and is_breaking_up and ta.momentum.rsi(df['c'], 14).iloc[-1] > 50:
             stop_price = round(ema50.iloc[-1] * 0.995, 6)
             tp_price = round(close + ((close - stop_price) * 2), 6)
             coin_name = symbol.split('/')[0]
-            signal_key = f"{coin_name}_{periyot}"
             
+            signal_key = f"{coin_name}_{periyot}_{round(close, 4)}"
             if signal_key not in st.session_state.sent_signals:
-                msg = (f"🚀 *YENİ SİNYAL: {coin_name}* ({periyot})\n"
+                msg = (f"🚀 *YENİ SİNYAL: {coin_name}* ({periyot})\n\n"
                        f"📈 *Giriş:* {round(close, 6)}\n"
                        f"🛡 *Stop:* {stop_price}\n"
                        f"🎯 *Hedef:* {tp_price}")
                 send_telegram_msg(msg)
                 st.session_state.sent_signals.append(signal_key)
-            return {"COİN": coin_name, "GİRİŞ": close, "STOP": stop_price, "HEDEF": tp_price}
-    except:
-        return None
 
+            return {"COİN": coin_name, "GİRİŞ": close, "STOP": stop_price, "HEDEF": tp_price}
+    except: return None
+
+# --- ANA EKRAN ---
 if st.session_state.running:
-    st.success("📡 Tarama yapılıyor...")
+    st.success(f"📡 Orijinal Hızda Tarama Yapılıyor... ({periyot})")
+    
     try:
-        # Hatanın alındığı satırı korumaya aldık
-        tickers = exchange.fetch_tickers() 
+        # Hızlı veri çekme
+        tickers = exchange.fetch_tickers()
         symbols = [s for s in tickers if s.endswith('/USDT:USDT') and (tickers[s]['quoteVolume'] or 0) > (hacim_limiti * 1000000)]
         
         found = []
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=15) as executor:
             results = list(executor.map(check_and_notify, symbols))
             found = [r for r in results if r]
             
-        if found: st.table(pd.DataFrame(found))
-    except Exception as e:
-        st.warning("🔄 Binance bağlantısı yenileniyor, lütfen bekleyin...")
-        time.sleep(5)
+        if found:
+            st.table(pd.DataFrame(found))
+    except:
+        time.sleep(1) # Hata olursa kısa bekleme
     
-    time.sleep(30)
+    time.sleep(1) # Hızlı döngü
     st.rerun()
+else:
+    st.info("### ⏸ Sistem Beklemede. Başlat butonuna basarak taramayı başlatabilirsin.")
