@@ -20,7 +20,7 @@ def send_telegram_msg(message):
         pass
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Sniper v14.1 Turbo", layout="wide")
+st.set_page_config(page_title="Sniper v14.2 Multi-EMA", layout="wide")
 
 @st.cache_resource
 def get_crypto():
@@ -32,7 +32,7 @@ def get_crypto():
 exchange = get_crypto()
 
 # --- YAN MENÜ ---
-st.sidebar.title("🚀 Sniper Radar v14.1")
+st.sidebar.title("🚀 Sniper Radar v14.2")
 if 'running' not in st.session_state: st.session_state.running = False
 def toggle(): st.session_state.running = not st.session_state.running
 
@@ -41,17 +41,23 @@ if st.session_state.running:
 else:
     st.sidebar.button("🚀 SİSTEMİ BAŞLAT", on_click=toggle, type="secondary", use_container_width=True)
 
-# 1. AYAR: Grafik Periyodu
+# --- YENİ: EMA STRATEJİ SEÇİMİ ---
+ema_secim = st.sidebar.selectbox("EMA Stratejisi Seç:", ["9 / 21 (Hızlı - Scalp)", "20 / 50 (Standart - Trend)", "50 / 200 (Güçlü - Golden Cross)"])
+
+# Seçime göre EMA değerlerini belirle
+if "9 / 21" in ema_secim:
+    ema_hizli, ema_yavas = 9, 21
+elif "20 / 50" in ema_secim:
+    ema_hizli, ema_yavas = 20, 50
+else:
+    ema_hizli, ema_yavas = 50, 200
+
 periyot = st.sidebar.selectbox("Grafik Zaman Dilimi:", ["1m", "5m", "15m", "1h", "4h", "1d"], index=1)
+sıklık_etiket = st.sidebar.selectbox("Tarama Yenileme Sıklığı:", ["Anlık (Hızlı)", "1 Dakika", "5 Dakika"], index=0)
 
-# 2. AYAR: Senin İstediğin Tarama Yenileme Sıklığı
-sıklık_etiket = st.sidebar.selectbox("Tarama Yenileme Sıklığı:", ["Anlık (Hızlı)", "1 Dakika", "5 Dakika", "15 Dakika"], index=0)
-
-# Seçime göre saniye belirleme
 sıklık_saniye = 1
 if sıklık_etiket == "1 Dakika": sıklık_saniye = 60
 elif sıklık_etiket == "5 Dakika": sıklık_saniye = 300
-elif sıklık_etiket == "15 Dakika": sıklık_saniye = 900
 
 hacim_limiti = st.sidebar.number_input("Min 24s Hacim (M$):", value=20)
 
@@ -60,29 +66,42 @@ if 'sent_signals' not in st.session_state:
 
 def check_and_notify(symbol):
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=periyot, limit=100)
+        # Seçilen EMA değerine göre yeterli mum çek (En az ema_yavas kadar)
+        bars = exchange.fetch_ohlcv(symbol, timeframe=periyot, limit=250)
         df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])
         close = df['c'].iloc[-1]
-        ema20 = ta.trend.ema_indicator(df['c'], 20)
-        ema50 = ta.trend.ema_indicator(df['c'], 50)
-        diff = (ema50.iloc[-1] - ema20.iloc[-1]) / ema20.iloc[-1] * 100
-        is_breaking_up = close > df['h'].iloc[-2] 
         
-        if 0 < diff < 0.22 and is_breaking_up and ta.momentum.rsi(df['c'], 14).iloc[-1] > 50:
-            stop_price = round(ema50.iloc[-1] * 0.995, 6)
+        # Dinamik EMA hesaplama
+        ema_fast_val = ta.trend.ema_indicator(df['c'], ema_hizli)
+        ema_slow_val = ta.trend.ema_indicator(df['c'], ema_yavas)
+        
+        diff = (ema_slow_val.iloc[-1] - ema_fast_val.iloc[-1]) / ema_fast_val.iloc[-1] * 100
+        is_breaking_up = close > df['h'].iloc[-2] 
+        rsi = ta.momentum.rsi(df['c'], 14).iloc[-1]
+        
+        # Filtre: Fiyat yavaş EMA üzerinde ve RSI 50'den büyük
+        if 0 < diff < 0.30 and is_breaking_up and rsi > 50:
+            stop_price = round(ema_slow_val.iloc[-1] * 0.995, 6)
             tp_price = round(close + ((close - stop_price) * 2), 6)
             coin_name = symbol.split('/')[0]
-            signal_key = f"{coin_name}_{periyot}_{round(close, 4)}"
+            
+            signal_key = f"{coin_name}_{periyot}_{ema_secim}_{round(close, 4)}"
             if signal_key not in st.session_state.sent_signals:
-                msg = (f"🚀 *YENİ SİNYAL: {coin_name}* ({periyot})\n\n📈 *Giriş:* {round(close, 6)}\n🛡 *Stop:* {stop_price}\n🎯 *Hedef:* {tp_price}")
+                msg = (f"🚀 *YENİ SİNYAL: {coin_name}*\n"
+                       f"📊 *Strateji:* EMA {ema_hizli}/{ema_yavas}\n"
+                       f"⏱ *Periyot:* {periyot}\n\n"
+                       f"📈 *Giriş:* {round(close, 6)}\n"
+                       f"🛡 *Stop:* {stop_price}\n"
+                       f"🎯 *Hedef:* {tp_price}")
                 send_telegram_msg(msg)
                 st.session_state.sent_signals.append(signal_key)
+
             return {"COİN": coin_name, "GİRİŞ": close, "STOP": stop_price, "HEDEF": tp_price}
     except: return None
 
 # --- ANA EKRAN ---
 if st.session_state.running:
-    st.success(f"📡 {periyot} grafiklerinde tarama yapıldı. Bir sonraki tarama {sıklık_etiket} sonra.")
+    st.success(f"📡 EMA {ema_hizli}/{ema_yavas} Taraması Aktif... ({periyot})")
     
     try:
         tickers = exchange.fetch_tickers()
@@ -96,7 +115,7 @@ if st.session_state.running:
         if found: st.table(pd.DataFrame(found))
     except: pass
     
-    time.sleep(sıklık_saniye) # Senin seçtiğin süre kadar bot bekler
+    time.sleep(sıklık_saniye)
     st.rerun()
 else:
-    st.info("### ⏸ Sistem Beklemede.")
+    st.info("### ⏸ Sistem Beklemede. Ayarları yapıp Başlat'a bas.")
